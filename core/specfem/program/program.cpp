@@ -150,11 +150,24 @@ void program_2d(
   const type_real dt = setup.get_dt();
   const int max_seismogram_time_step = setup.get_max_seismogram_step();
   const int nstep_between_samples = setup.get_nstep_between_samples();
+
+  // Determine the active property reader:
+  //   1. A structured property file reader (databases.reader.properties) takes
+  //      precedence if configured.
+  //   2. Otherwise, a Cartesian velocity-model injection reader is used if the
+  //      databases.velocity-model section is present.
+  //   3. If neither is configured, nullptr is passed (standard element-uniform
+  //      material assignment from the mesh database).
+  auto property_reader = setup.instantiate_property_reader();
+  if (!property_reader && setup.has_velocity_model()) {
+    property_reader = setup.instantiate_velocity_model_reader();
+  }
+
   specfem::assembly::assembly<specfem::dimension::type::dim2> assembly(
       mesh, quadrature, sources, receivers, setup.get_seismogram_types(),
       setup.get_t0(), dt, nsteps, max_seismogram_time_step,
       nstep_between_samples, setup.get_simulation_type(),
-      setup.allocate_boundary_values(), setup.instantiate_property_reader());
+      setup.allocate_boundary_values(), property_reader);
 
   specfem::Logger::info(assembly.print());
 

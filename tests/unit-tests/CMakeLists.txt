@@ -494,6 +494,44 @@ target_link_libraries(
 )
 
 add_executable(
+  velocity_model_tests
+  io/velocity_model/test_velocity_model.cpp
+  assembly/test_fixture/test_fixture.cpp
+  io/velocity_model/runner.cpp
+)
+
+set_target_properties(velocity_model_tests PROPERTIES UNITY_BUILD OFF)
+
+target_link_libraries(
+  velocity_model_tests
+  reader
+  writer
+  mesh
+  assembly
+  quadrature
+  specfem_environment
+  io
+  yaml-cpp
+  utilities
+  enumerations
+  shape_functions
+  boost
+  -lpthread -lm
+  gtest_main
+  ${BOOST_LIBS}
+)
+
+# Create a symbolic link so the test binary can resolve relative data paths
+add_custom_command(
+  TARGET velocity_model_tests POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E create_symlink
+    ${TEST_DIR}/data
+    ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data
+  COMMENT "Creating data symlink for velocity_model_tests"
+  VERBATIM
+)
+
+add_executable(
   assembly_receivers_tests
   assembly/receivers/receivers_tests.cpp
   assembly/receivers/dim2/receivers_tests.cpp
@@ -903,6 +941,7 @@ if(NOT MPI_PARALLEL)
     abort_tests
     assembly_receivers_tests
     assembly_tests
+    velocity_model_tests
     # compute_acoustic_tests
     # compute_coupled_interfaces_tests
     # compute_elastic_tests

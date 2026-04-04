@@ -2,6 +2,7 @@
 #include "enumerations/interface.hpp"
 #include "io/reader.hpp"
 #include "mesh/mesh.hpp"
+#include "specfem/logger.hpp"
 
 specfem::assembly::assembly<specfem::dimension::type::dim2>::assembly(
     const specfem::mesh::mesh<dimension_tag> &mesh,
@@ -88,6 +89,15 @@ specfem::assembly::assembly<specfem::dimension::type::dim2>::assembly(
   }
 
   this->check_jacobian_matrix();
+
+  // If a property reader (e.g. velocity_model_reader) was provided, invoke it
+  // now that all assembly sub-structures are fully initialised.  The reader is
+  // responsible for filling every GLL-point property and calling
+  // assembly.properties.copy_to_device() before returning.
+  if (property_reader) {
+    specfem::Logger::info("Reading/injecting GLL model from external reader.");
+    property_reader->read(*this);
+  }
 
   return;
 }

@@ -7,6 +7,7 @@
 #include "header.hpp"
 #include "io/reader.hpp"
 #include "parameter_parser/solver/interface.hpp"
+#include "parameter_parser/velocity_model.hpp"
 #include "quadrature.hpp"
 #include "receivers.hpp"
 #include "run_setup.hpp"
@@ -305,6 +306,31 @@ public:
   }
 
   /**
+   * @brief Create a velocity model reader for GLL-point injection from an
+   *        external Cartesian grid file.
+   *
+   * Returns nullptr if no `velocity-model` section is present in the
+   * `databases` block of the YAML configuration.
+   *
+   * @return Shared pointer to a specfem::io::reader, or nullptr.
+   */
+  std::shared_ptr<specfem::io::reader>
+  instantiate_velocity_model_reader() const {
+    if (this->velocity_model_config) {
+      return this->velocity_model_config->instantiate_reader();
+    } else {
+      return nullptr;
+    }
+  }
+
+  /**
+   * @brief Return true if a velocity-model injection has been configured.
+   */
+  bool has_velocity_model() const {
+    return this->velocity_model_config != nullptr;
+  }
+
+  /**
    * @brief Create property writer for saving material properties.
    *
    * @return Shared pointer to property writer or nullptr if not configured
@@ -423,6 +449,8 @@ private:
       databases; ///< Database file path configuration
   std::unique_ptr<specfem::runtime_configuration::solver>
       solver; ///< Solver algorithm configuration
+  std::unique_ptr<specfem::runtime_configuration::velocity_model>
+      velocity_model_config; ///< External Cartesian velocity model (optional)
 };
 } // namespace runtime_configuration
 } // namespace specfem

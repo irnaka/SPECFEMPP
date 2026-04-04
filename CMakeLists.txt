@@ -273,6 +273,8 @@ add_library(
         src/io/mesh/impl/fortran/dim3/read_mpi_interfaces.cpp
         src/io/mesh/impl/fortran/dim3/read_pml_boundaries.cpp
         src/io/mesh/impl/fortran/dim3/read_adjacency_graph.cpp
+        # External Cartesian velocity model injection (2D)
+        src/io/velocity_model/reader.cpp
 )
 
 target_link_libraries(
@@ -466,6 +468,7 @@ add_library(
         src/parameter_parser/writer/plot_wavefield.cpp
         src/parameter_parser/writer/kernel.cpp
         src/parameter_parser/writer/property.cpp
+        src/parameter_parser/velocity_model.cpp
 )
 
 target_link_libraries(
@@ -479,6 +482,7 @@ target_link_libraries(
         reader
         kokkos_kernels
         specfem::solver
+        io
         ${BOOST_LIBS}
 )
 

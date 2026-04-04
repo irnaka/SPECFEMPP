@@ -1,4 +1,5 @@
 #include "parameter_parser/setup.hpp"
+#include "parameter_parser/velocity_model.hpp"
 #include "utilities/strings.hpp"
 #include "yaml-cpp/yaml.h"
 #include <chrono>
@@ -123,6 +124,34 @@ specfem::runtime_configuration::setup::setup(const YAML::Node &parameter_dict,
         n_databases["reader"]["properties"], false);
   } else {
     this->property = nullptr;
+  }
+
+  // Parse optional velocity-model injection section.
+  // Supported YAML block (inside databases:):
+  //
+  //   velocity-model:
+  //     format:        ascii      # "ascii" (default) or "binary"
+  //     file:          "MODEL/velocity.dat"
+  //     interpolation: bilinear   # "bilinear" (default) or "nearest"
+  //     out-of-bounds: clamp      # "clamp" (default) or "error"
+  //
+  if (const YAML::Node &n_vel = n_databases["velocity-model"]) {
+    if (this->property != nullptr) {
+      throw std::runtime_error(
+          "velocity-model and databases.reader/writer.properties cannot both "
+          "be specified at the same time. Use one GLL injection mechanism.");
+    }
+    try {
+      this->velocity_model_config =
+          std::make_unique<specfem::runtime_configuration::velocity_model>(
+              n_vel);
+    } catch (const std::exception &e) {
+      throw std::runtime_error(
+          std::string("Error reading velocity-model configuration: ") +
+          e.what());
+    }
+  } else {
+    this->velocity_model_config = nullptr;
   }
 
   // Get receiver info
