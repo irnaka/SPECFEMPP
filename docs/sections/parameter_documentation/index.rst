@@ -887,6 +887,73 @@ Parameter definitions
 
                 mesh-parameters: /path/to/mesh_parameters.bin
 
+        .. dropdown:: ``velocity-model`` [optional]
+
+            Inject an external Cartesian velocity model (Vp, Vs, density) at
+            every GLL quadrature point, overriding the element-uniform materials
+            from the mesh database.  Only supported for 2D simulations.
+            See :ref:`velocity_model_injection` for a full walkthrough.
+
+            .. note::
+
+                ``velocity-model`` and the legacy ``databases.reader.properties``
+                key are mutually exclusive.
+
+            .. code-block:: yaml
+                :caption: Example
+
+                velocity-model:
+                  file:          "MODEL/velocity.dat"
+                  format:        ascii
+                  interpolation: bilinear
+                  out-of-bounds: clamp
+
+            .. dropdown:: ``file``
+
+                Path to the velocity model file (ASCII or binary).
+
+                :default value: None (required)
+
+                :possible values: [string]
+
+            .. dropdown:: ``format`` [optional]
+
+                File format.
+
+                :default value: ``ascii``
+
+                :possible values: ``ascii`` | ``binary``
+
+                ``ascii`` auto-detects regular-grid (contains ``REGULAR_GRID``
+                keyword) vs. scattered-point format.
+                ``binary`` expects the compact little-endian layout documented
+                in :ref:`format_binary`.
+
+            .. dropdown:: ``interpolation`` [optional]
+
+                Interpolation method used when evaluating the model at each GLL
+                point location.
+
+                :default value: ``bilinear``
+
+                :possible values: ``bilinear`` | ``nearest``
+
+                ``bilinear`` — second-order accurate on regular grids.
+                ``nearest`` — snaps to the closest node; useful to preserve sharp
+                discontinuities.
+                Scattered-point data always uses nearest-neighbour.
+
+            .. dropdown:: ``out-of-bounds`` [optional]
+
+                Behaviour when a GLL point falls outside the model grid.
+
+                :default value: ``clamp``
+
+                :possible values: ``clamp`` | ``error``
+
+                ``clamp`` — silently extends the nearest boundary value.
+                ``error`` — aborts with a descriptive message.
+
 
     .. dropdown:: ``sources``
 

@@ -14,3 +14,4 @@
     CUBIT/index.rst
     marmousi/index.rst
     translate_specfem2d_fortran_example/index.rst
+    velocity-model-injection/index.rst
