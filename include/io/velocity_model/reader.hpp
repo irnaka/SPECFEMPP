@@ -1,13 +1,18 @@
 #pragma once
 
 #include "io/reader.hpp"
-#include "io/velocity_model/impl/cartesian_grid.hpp"
-#include "specfem/assembly.hpp"
 #include <memory>
 #include <string>
 
 namespace specfem {
 namespace io {
+
+// Forward-declare the enum types from the cartesian_grid header.
+// The full header is only included in the .cpp implementation.
+namespace velocity_model {
+enum class InterpolationMethod;
+enum class OutOfBoundsPolicy;
+} // namespace velocity_model
 
 /**
  * @brief Reader that injects an external Cartesian velocity model into GLL
@@ -42,9 +47,9 @@ namespace io {
  * for 2-D simulations:
  * | Medium       | Stored properties | Formula                                 |
  * |--------------|-------------------|-----------------------------------------|
- * | elastic PSV  | kappa, mu, rho    | kappa=rho*(Vp²−4/3*Vs²), mu=rho*Vs²    |
+ * | elastic PSV  | kappa, mu, rho    | kappa=rho*(Vp^2-4/3*Vs^2), mu=rho*Vs^2 |
  * | elastic SH   | kappa, mu, rho    | (same as PSV)                           |
- * | acoustic     | rho_inverse, kappa| kappa=rho*Vp², rho_inverse=1/rho        |
+ * | acoustic     | rho_inverse, kappa| kappa=rho*Vp^2, rho_inverse=1/rho       |
  * | poroelastic  | (not overridden)  | warning printed; mesh materials retained|
  *
  * Other medium types (ELASTIC_PSV_T, anisotropic, Cosserat) that have zero
@@ -70,33 +75,24 @@ public:
    */
   velocity_model_reader(
       const std::string &filename, Format format,
-      velocity_model::InterpolationMethod method =
-          velocity_model::InterpolationMethod::bilinear,
-      velocity_model::OutOfBoundsPolicy oob_policy =
-          velocity_model::OutOfBoundsPolicy::clamp);
+      velocity_model::InterpolationMethod method,
+      velocity_model::OutOfBoundsPolicy oob_policy);
+
+  /**
+   * @brief Construct a velocity model reader with default interpolation options.
+   *
+   * Uses bilinear interpolation and clamp out-of-bounds policy.
+   *
+   * @param filename     Path to the velocity model file.
+   * @param format       File format (ascii or binary).
+   */
+  velocity_model_reader(const std::string &filename, Format format);
 
   /**
    * @brief Inject the velocity model into all GLL points of the 2-D assembly.
-   *
-   * The method:
-   * 1. Loads the Cartesian grid from disk.
-   * 2. Iterates over every spectral element, and for every GLL point reads
-   *    the physical (x, z) coordinates from @c assembly.mesh.h_coord.
-   * 3. Interpolates (Vp, Vs, Rho) at that location.
-   * 4. Converts to the native storage format (kappa, mu, rho for elastic;
-   *    rho_inverse, kappa for acoustic).
-   * 5. Stores the result on host via @c specfem::assembly::store_on_host.
-   * 6. Copies all properties to device memory.
-   *
-   * @param assembly 2-D SPECFEM++ assembly.  Must have been constructed with
-   *                 @c has_gll_model = true (i.e. a non-null @c velocity_model_reader
-   *                 was passed to the assembly constructor).
    */
   void read(specfem::assembly::assembly<specfem::dimension::type::dim2>
                 &assembly) override;
-
-  // Note: the base specfem::io::reader only declares a dim2 read() method.
-  // 3-D injection will be added when the base class is extended.
 
 private:
   std::string filename_;

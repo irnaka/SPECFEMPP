@@ -2,7 +2,7 @@
 
 #include "enumerations/interface.hpp"
 #include "io/velocity_model/impl/cartesian_grid.hpp"
-#include "specfem/assembly.hpp"
+#include "specfem/assembly/assembly/dim2/assembly.hpp"
 #include "specfem/assembly/properties.hpp"
 #include "specfem/logger.hpp"
 #include "specfem/macros.hpp"
@@ -330,6 +330,12 @@ specfem::io::velocity_model_reader::velocity_model_reader(
     velocity_model::OutOfBoundsPolicy oob_policy)
     : filename_(filename), format_(format), method_(method),
       oob_policy_(oob_policy) {}
+
+specfem::io::velocity_model_reader::velocity_model_reader(
+    const std::string &filename, Format format)
+    : filename_(filename), format_(format),
+      method_(velocity_model::InterpolationMethod::bilinear),
+      oob_policy_(velocity_model::OutOfBoundsPolicy::clamp) {}
 
 void specfem::io::velocity_model_reader::read(
     specfem::assembly::assembly<specfem::dimension::type::dim2> &assembly) {

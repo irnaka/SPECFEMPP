@@ -1,4 +1,5 @@
 #include "parameter_parser/velocity_model.hpp"
+#include "io/velocity_model/impl/cartesian_grid.hpp"
 #include "io/velocity_model/reader.hpp"
 
 std::shared_ptr<specfem::io::reader>
