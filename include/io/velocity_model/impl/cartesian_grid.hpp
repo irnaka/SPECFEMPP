@@ -1,6 +1,5 @@
 #pragma once
 
-#include "specfem_setup.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>

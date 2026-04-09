@@ -7,7 +7,6 @@
 #include "header.hpp"
 #include "io/reader.hpp"
 #include "parameter_parser/solver/interface.hpp"
-#include "parameter_parser/velocity_model.hpp"
 #include "quadrature.hpp"
 #include "receivers.hpp"
 #include "run_setup.hpp"
@@ -38,6 +37,9 @@ namespace specfem {
  */
 namespace runtime_configuration {
 
+// Forward declaration — full definition in parameter_parser/velocity_model.hpp
+class velocity_model;
+
 /**
  * @brief Main configuration manager for SPECFEM simulations.
  *
@@ -58,6 +60,9 @@ public:
    * pybind environment
    */
   setup(const std::string &parameter_file, const std::string &default_file);
+  ~setup();
+  setup(setup &&) noexcept;
+  setup &operator=(setup &&) noexcept;
   /**
    * @brief Construct a new setup object
    *
@@ -315,20 +320,12 @@ public:
    * @return Shared pointer to a specfem::io::reader, or nullptr.
    */
   std::shared_ptr<specfem::io::reader>
-  instantiate_velocity_model_reader() const {
-    if (this->velocity_model_config) {
-      return this->velocity_model_config->instantiate_reader();
-    } else {
-      return nullptr;
-    }
-  }
+  instantiate_velocity_model_reader() const;
 
   /**
    * @brief Return true if a velocity-model injection has been configured.
    */
-  bool has_velocity_model() const {
-    return this->velocity_model_config != nullptr;
-  }
+  bool has_velocity_model() const;
 
   /**
    * @brief Create property writer for saving material properties.

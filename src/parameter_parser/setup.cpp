@@ -22,6 +22,25 @@ void create_folder_if_not_exists(const std::string &folder_name) {
   }
 }
 
+specfem::runtime_configuration::setup::~setup() = default;
+specfem::runtime_configuration::setup::setup(setup &&) noexcept = default;
+specfem::runtime_configuration::setup &
+specfem::runtime_configuration::setup::operator=(setup &&) noexcept = default;
+
+std::shared_ptr<specfem::io::reader>
+specfem::runtime_configuration::setup::instantiate_velocity_model_reader()
+    const {
+  if (this->velocity_model_config) {
+    return this->velocity_model_config->instantiate_reader();
+  } else {
+    return nullptr;
+  }
+}
+
+bool specfem::runtime_configuration::setup::has_velocity_model() const {
+  return this->velocity_model_config != nullptr;
+}
+
 specfem::runtime_configuration::setup::setup(const std::string &parameter_file,
                                              const std::string &default_file) {
   *this = setup(YAML::LoadFile(parameter_file), YAML::LoadFile(default_file));
