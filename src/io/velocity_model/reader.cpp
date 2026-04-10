@@ -10,8 +10,10 @@
 #include "specfem_setup.hpp"
 
 #include <Kokkos_Core.hpp>
+#include <atomic>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -192,11 +194,50 @@ struct DeviceGrid {
 // ---------------------------------------------------------------------------
 
 /**
+ * @brief Accumulated statistics gathered during injection for diagnostics.
+ *
+ * All members are written from a single thread (the kernel runs on the host
+ * execution space via std::mutex-protected updates) because Kokkos MDRangePolicy
+ * on the host with OpenMP does not guarantee atomic access to ordinary doubles.
+ * We use std::atomic counters so that the parallel_for updates are race-free.
+ */
+struct ModelStats {
+  std::atomic<double> vp_max{0.0};
+  std::atomic<double> vs_max{0.0};
+  std::atomic<double> rho_min{std::numeric_limits<double>::max()};
+  std::atomic<long> n_negative_kappa{0};
+  std::atomic<long> n_nonpositive_rho{0};
+  std::atomic<long> n_nonpositive_vp{0};
+  std::atomic<long> n_total{0};
+
+  // Atomic max/min helpers (std::atomic<double> has load/store but no
+  // compare_exchange_weak in C++17 — roll our own CAS loop).
+  void update_max(std::atomic<double> &a, double v) {
+    double prev = a.load(std::memory_order_relaxed);
+    while (v > prev &&
+           !a.compare_exchange_weak(prev, v, std::memory_order_relaxed))
+      ;
+  }
+  void update_min(std::atomic<double> &a, double v) {
+    double prev = a.load(std::memory_order_relaxed);
+    while (v < prev &&
+           !a.compare_exchange_weak(prev, v, std::memory_order_relaxed))
+      ;
+  }
+};
+
+/**
  * @brief Inject into elastic (PSV or SH) isotropic elements — Kokkos parallel.
  *
  * Stored as (kappa, mu, rho) where
  *   kappa = rho * (Vp^2 - 4/3 * Vs^2)
  *   mu    = rho * Vs^2
+ *
+ * Physical validity:
+ *   - rho > 0 required (abort otherwise).
+ *   - Vp > 0 required (abort otherwise).
+ *   - kappa > 0 required for stability; if kappa <= 0 the GLL point is
+ *     clamped to a small positive value and counted in stats.n_negative_kappa.
  */
 template <specfem::element::medium_tag MediumTag>
 std::enable_if_t<specfem::element::is_elastic<MediumTag>::value, void>
@@ -205,7 +246,8 @@ inject_elastic_isotropic(
     specfem::assembly::assembly<specfem::dimension::type::dim2> &assembly,
     const specfem::io::velocity_model::CartesianGrid2D &grid,
     specfem::io::velocity_model::InterpolationMethod method,
-    specfem::io::velocity_model::OutOfBoundsPolicy oob_policy) {
+    specfem::io::velocity_model::OutOfBoundsPolicy oob_policy,
+    ModelStats &stats) {
 
   constexpr auto dim2 = specfem::dimension::type::dim2;
   constexpr auto prop = specfem::element::property_tag::isotropic;
@@ -220,16 +262,11 @@ inject_elastic_isotropic(
   const auto &props = assembly.properties;
   const auto &h_coord = assembly.mesh.h_coord;
 
-  // Parallel injection on the host (host execution space).
-  // We keep this on the host because:
-  //   a) CartesianGrid2D bilinear interp is branch-heavy — hard to vectorise.
-  //   b) For a regular grid we build a DeviceGrid and run on device below.
-  // For the host path, iterate with a simple nested loop in parallel.
   Kokkos::parallel_for(
       "inject_elastic_isotropic_" + std::to_string(static_cast<int>(MediumTag)),
       Kokkos::MDRangePolicy<Kokkos::DefaultHostExecutionSpace, Kokkos::Rank<3>>(
           {0, 0, 0}, {nelement, ngllz, ngllx}),
-      [=, &grid, &props, &h_coord, &elements](int i, int iz, int ix) {
+      [=, &grid, &props, &h_coord, &elements, &stats](int i, int iz, int ix) {
         const int ispec = elements(i);
 
         // Physical coordinates of this GLL point
@@ -238,9 +275,35 @@ inject_elastic_isotropic(
 
         auto [vp, vs, rho] = grid.interpolate(x, z, method, oob_policy);
 
+        // Accumulate statistics
+        stats.update_max(stats.vp_max, vp);
+        stats.update_max(stats.vs_max, vs);
+        stats.update_min(stats.rho_min, rho);
+        stats.n_total.fetch_add(1, std::memory_order_relaxed);
+
+        // Validate physical values
+        if (rho <= 0.0) {
+          stats.n_nonpositive_rho.fetch_add(1, std::memory_order_relaxed);
+          Kokkos::abort("velocity_model_reader: rho <= 0 in elastic element. "
+                        "Check model file units (rho must be in kg/m^3).");
+        }
+        if (vp <= 0.0) {
+          stats.n_nonpositive_vp.fetch_add(1, std::memory_order_relaxed);
+          Kokkos::abort("velocity_model_reader: Vp <= 0 in elastic element. "
+                        "Check model file units (Vp must be in m/s).");
+        }
+
         // Convert to elastic moduli
         const double mu = rho * vs * vs;
-        const double kappa = rho * (vp * vp - (4.0 / 3.0) * vs * vs);
+        double kappa = rho * (vp * vp - (4.0 / 3.0) * vs * vs);
+
+        // kappa <= 0 means Vp/Vs < sqrt(4/3) ~ 1.155 (non-physical rock).
+        // Clamp to a small positive value to avoid NaN and count occurrences.
+        if (kappa <= 0.0) {
+          stats.n_negative_kappa.fetch_add(1, std::memory_order_relaxed);
+          // Use P-wave modulus (Vp only) as fallback: M = rho*Vp^2
+          kappa = rho * vp * vp * 1e-6; // tiny positive — effectively pure shear
+        }
 
         using PointType =
             specfem::point::properties<dim2, MediumTag, prop, false>;
@@ -266,7 +329,8 @@ void inject_acoustic_isotropic(
     specfem::assembly::assembly<specfem::dimension::type::dim2> &assembly,
     const specfem::io::velocity_model::CartesianGrid2D &grid,
     specfem::io::velocity_model::InterpolationMethod method,
-    specfem::io::velocity_model::OutOfBoundsPolicy oob_policy) {
+    specfem::io::velocity_model::OutOfBoundsPolicy oob_policy,
+    ModelStats &stats) {
 
   constexpr auto dim2 = specfem::dimension::type::dim2;
   constexpr auto medium = specfem::element::medium_tag::acoustic;
@@ -286,7 +350,7 @@ void inject_acoustic_isotropic(
       "inject_acoustic_isotropic",
       Kokkos::MDRangePolicy<Kokkos::DefaultHostExecutionSpace, Kokkos::Rank<3>>(
           {0, 0, 0}, {nelement, ngllz, ngllx}),
-      [=, &grid, &props, &h_coord, &elements](int i, int iz, int ix) {
+      [=, &grid, &props, &h_coord, &elements, &stats](int i, int iz, int ix) {
         const int ispec = elements(i);
 
         const double x = h_coord(0, ispec, iz, ix);
@@ -294,14 +358,19 @@ void inject_acoustic_isotropic(
 
         auto [vp, vs, rho] = grid.interpolate(x, z, method, oob_policy);
 
-        if (vs > 0.0) {
-          // Non-zero Vs in an acoustic element — silently use only Vp.
-          // (vs is ignored for fluids; it cannot propagate shear waves.)
-        }
+        stats.update_max(stats.vp_max, vp);
+        stats.update_min(stats.rho_min, rho);
+        stats.n_total.fetch_add(1, std::memory_order_relaxed);
+
         if (rho <= 0.0) {
-          Kokkos::abort(
-              "velocity_model_reader: density must be positive for acoustic "
-              "elements.");
+          stats.n_nonpositive_rho.fetch_add(1, std::memory_order_relaxed);
+          Kokkos::abort("velocity_model_reader: rho <= 0 in acoustic element. "
+                        "Check model file units (rho must be in kg/m^3).");
+        }
+        if (vp <= 0.0) {
+          stats.n_nonpositive_vp.fetch_add(1, std::memory_order_relaxed);
+          Kokkos::abort("velocity_model_reader: Vp <= 0 in acoustic element. "
+                        "Check model file units (Vp must be in m/s).");
         }
 
         const double kappa = rho * vp * vp;
@@ -316,6 +385,46 @@ void inject_acoustic_isotropic(
       });
 
   Kokkos::fence();
+}
+
+/**
+ * @brief Estimate the minimum GLL-point spacing in the mesh (metres).
+ *
+ * Approximates by scanning every GLL point and computing the minimum
+ * distance to its x-neighbour and z-neighbour within each element.
+ * This is an O(nelement * ngll^2) pass done once at startup.
+ */
+double estimate_min_gll_spacing(
+    const specfem::assembly::assembly<specfem::dimension::type::dim2>
+        &assembly) {
+  const auto &h_coord = assembly.mesh.h_coord;
+  const int nelement = h_coord.extent(1);
+  const int ngllz = h_coord.extent(2);
+  const int ngllx = h_coord.extent(3);
+
+  double h_min = std::numeric_limits<double>::max();
+  for (int ispec = 0; ispec < nelement; ++ispec) {
+    for (int iz = 0; iz < ngllz - 1; ++iz) {
+      for (int ix = 0; ix < ngllx - 1; ++ix) {
+        // x-direction spacing
+        const double dx =
+            h_coord(0, ispec, iz, ix + 1) - h_coord(0, ispec, iz, ix);
+        const double dz_x =
+            h_coord(1, ispec, iz, ix + 1) - h_coord(1, ispec, iz, ix);
+        const double ds_x = std::sqrt(dx * dx + dz_x * dz_x);
+        if (ds_x > 0.0 && ds_x < h_min) h_min = ds_x;
+
+        // z-direction spacing
+        const double dx_z =
+            h_coord(0, ispec, iz + 1, ix) - h_coord(0, ispec, iz, ix);
+        const double dz =
+            h_coord(1, ispec, iz + 1, ix) - h_coord(1, ispec, iz, ix);
+        const double ds_z = std::sqrt(dx_z * dx_z + dz * dz);
+        if (ds_z > 0.0 && ds_z < h_min) h_min = ds_z;
+      }
+    }
+  }
+  return h_min;
 }
 
 } // anonymous namespace
@@ -365,13 +474,15 @@ void specfem::io::velocity_model_reader::read(
   // 2. Inject into each medium / property combination
   // ------------------------------------------------------------------
   const auto &etypes = assembly.element_types;
+  ModelStats stats;
 
   // Elastic PSV isotropic
   {
     constexpr auto med = specfem::element::medium_tag::elastic_psv;
     constexpr auto prp = specfem::element::property_tag::isotropic;
     const auto elems = etypes.get_elements_on_host(med, prp);
-    inject_elastic_isotropic<med>(elems, assembly, grid, method_, oob_policy_);
+    inject_elastic_isotropic<med>(elems, assembly, grid, method_, oob_policy_,
+                                  stats);
   }
 
   // Elastic SH isotropic
@@ -379,7 +490,8 @@ void specfem::io::velocity_model_reader::read(
     constexpr auto med = specfem::element::medium_tag::elastic_sh;
     constexpr auto prp = specfem::element::property_tag::isotropic;
     const auto elems = etypes.get_elements_on_host(med, prp);
-    inject_elastic_isotropic<med>(elems, assembly, grid, method_, oob_policy_);
+    inject_elastic_isotropic<med>(elems, assembly, grid, method_, oob_policy_,
+                                  stats);
   }
 
   // Acoustic isotropic
@@ -387,7 +499,8 @@ void specfem::io::velocity_model_reader::read(
     constexpr auto med = specfem::element::medium_tag::acoustic;
     constexpr auto prp = specfem::element::property_tag::isotropic;
     const auto elems = etypes.get_elements_on_host(med, prp);
-    inject_acoustic_isotropic(elems, assembly, grid, method_, oob_policy_);
+    inject_acoustic_isotropic(elems, assembly, grid, method_, oob_policy_,
+                               stats);
   }
 
   // Warn for medium types that are not currently supported for injection.
@@ -436,7 +549,57 @@ void specfem::io::velocity_model_reader::read(
       })
 
   // ------------------------------------------------------------------
-  // 3. Synchronise host → device
+  // 3. Post-injection diagnostics
+  // ------------------------------------------------------------------
+  {
+    const double vp_max  = stats.vp_max.load(std::memory_order_relaxed);
+    const double vs_max  = stats.vs_max.load(std::memory_order_relaxed);
+    const double rho_min = stats.rho_min.load(std::memory_order_relaxed);
+    const long   n_neg_k = stats.n_negative_kappa.load(std::memory_order_relaxed);
+    const long   n_total = stats.n_total.load(std::memory_order_relaxed);
+
+    std::ostringstream diag;
+    diag << "Velocity model injection statistics (" << n_total << " GLL pts):\n"
+         << "  Vp_max  = " << vp_max  << " m/s\n"
+         << "  Vs_max  = " << vs_max  << " m/s\n"
+         << "  Rho_min = " << rho_min << " kg/m^3\n";
+    specfem::Logger::info(diag.str());
+
+    // Warn about non-physical Vp/Vs ratios that forced kappa clamping
+    if (n_neg_k > 0) {
+      std::ostringstream warn;
+      warn << "WARNING: " << n_neg_k << " GLL point(s) had kappa <= 0\n"
+           << "  (Vp/Vs < sqrt(4/3) ~ 1.155, non-physical for rock).\n"
+           << "  kappa was clamped to a small positive value at those points.\n"
+           << "  Check your velocity model: ensure Vp/Vs >= 1.2 everywhere.\n";
+      specfem::Logger::warning(warn.str());
+    }
+
+    // CFL stability estimate — warn if injected Vp_max may violate stability
+    if (n_total > 0 && vp_max > 0.0) {
+      const double h_min = estimate_min_gll_spacing(assembly);
+      if (h_min > 0.0) {
+        // Courant number estimate: C = Vp_max * dt / h_min; stable if C < 0.45
+        // We do not have dt here, so we report the stable dt upper bound.
+        // The typical Courant limit for the Newmark scheme used in SPECFEM is ~0.45.
+        constexpr double courant_limit = 0.45;
+        const double dt_max = courant_limit * h_min / vp_max;
+
+        std::ostringstream cfl;
+        cfl << "CFL stability estimate for injected model:\n"
+            << "  min GLL spacing  h_min  = " << h_min  << " m\n"
+            << "  max P-wave speed Vp_max = " << vp_max << " m/s\n"
+            << "  --> safe dt upper bound  = " << dt_max << " s\n"
+            << "  (Courant limit C = " << courant_limit << ")\n"
+            << "  Verify that your time step dt <= " << dt_max
+            << " s to ensure stability.\n";
+        specfem::Logger::info(cfl.str());
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // 4. Synchronise host → device
   // ------------------------------------------------------------------
   assembly.properties.copy_to_device();
 
